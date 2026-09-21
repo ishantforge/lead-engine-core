@@ -121,7 +121,7 @@ export default async function handler(req, res) {
         olderTurns.map(m => `${m.role}: ${m.content}`).join('\n');
 
       const sumRes = await groq.chat.completions.create({
-        model: MODEL_ID,
+        model: "qwen/qwen3.8-27b",
         messages: [{ role: 'user', content: summaryPrompt }],
         temperature: 0.1
       });
@@ -167,7 +167,7 @@ ${runningSummary ? `\nRolling Conversation Context:\n${runningSummary}` : ''}`
       }
 
       response = await groq.chat.completions.create({
-        model: MODEL_ID,
+        model: "qwen/qwen3.8-27b",
         messages: messages
       });
       responseMessage = response.choices[0].message;
@@ -185,7 +185,7 @@ ${runningSummary ? `\nRolling Conversation Context:\n${runningSummary}` : ''}`
     res.write(`event: session\ndata: ${JSON.stringify({ sessionId: currentSessionId })}\n\n`);
 
     const stream = await groq.chat.completions.create({
-      model: MODEL_ID,
+      model: "qwen/qwen3.8-27b",
       messages: messages,
       stream: true
     });
