@@ -165,14 +165,15 @@ export default async function handler(req, res) {
       }
     }
 
-    // Secondary pass with real-time SSE token streaming
+   // Secondary pass with real-time SSE token streaming
     const stream = await groq.chat.completions.create({
       model: "openai/gpt-oss-20b",
       messages,
+      tools,              // Provide tool definitions so the engine allows the context
+      tool_choice: "none", // Explicitly instruct the model to stream prose only
       stream: true,
       temperature: 0.1,
       max_tokens: 600,
-      tool_choice: "none", // <--- Add this line to prevent tool calling during text generation
     });
 
     let completeAssistantReply = "";
