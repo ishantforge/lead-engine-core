@@ -27,6 +27,21 @@ const availableTools = {
       match_count: 2
     });
 
+    async function dispatchToMake(payload) {
+  const webhookUrl = process.env.MAKE_DISPATCH_WEBHOOK_URL;
+  if (!webhookUrl) return;
+
+  try {
+    fetch(webhookUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    }).catch(err => console.error("Make dispatch async error:", err.message));
+  } catch (e) {
+    console.error("Failed to trigger Make dispatch:", e.message);
+  }
+}
+
     if (error || !data || data.length === 0) {
       return "No directly matching documentation found in database.";
     }
@@ -202,6 +217,21 @@ ${runningSummary ? `\nRolling Conversation Context:\n${runningSummary}` : ''}`
 
     res.write(`event: done\ndata: {}\n\n`);
     res.end();
+
+    // Check if lead was high urgency or scheduled an emergency
+      const isEmergencySync = fullAssistantReply.includes("vip-sync") || fullAssistantReply.toLowerCase().includes("emergency");
+      const computedUrgency = isEmergencySync ? 9 : 5;
+
+      // Fire non-blocking downstream webhook to Make
+      dispatchToMake({
+        sessionId: currentSessionId,
+        name: name || "Anonymous Lead",
+        email: email || "Not Provided",
+        userMessage: message,
+        assistantReply: fullAssistantReply,
+        urgencyScore: computedUrgency,
+        timestamp: new Date().toISOString()
+      });
 
     // 6. Asynchronously commit the final generated response into Supabase
     if (completeAssistantReply) {
