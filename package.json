@@ -1,0 +1,26 @@
+{
+  "name": "lead-engine-core",
+  "type": "module",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ishantforge/lead-engine-core.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/ishantforge/lead-engine-core/issues"
+  },
+  "homepage": "https://github.com/ishantforge/lead-engine-core#readme",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.116.0",
+    "dotenv": "^18.0.1",
+    "groq-sdk": "^1.6.0"
+  }
+}
