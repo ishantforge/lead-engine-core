@@ -1,72 +1,14 @@
-import Groq from 'groq-sdk';
-import { pipeline } from '@xenova/transformers';
-import { createClient } from '@supabase/supabase-js';
+import Groq from "groq-sdk";
+import { createClient } from "@supabase/supabase-js";
+import { pipeline } from "@xenova/transformers";
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
-const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY
+);
 
-const MODEL_ID = "qwen/qwen3.8-27b"; // Ensure this matches your active Groq model
-
-let embedderInstance = null;
-async function getEmbedder() {
-  if (!embedderInstance) {
-    embedderInstance = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2');
-  }
-  return embedderInstance;
-}
-
-const availableTools = {
-  search_knowledge_base: async ({ query }) => {
-    const embedder = await getEmbedder();
-    const output = await embedder(query, { pooling: 'mean', normalize: true });
-    const queryEmbedding = Array.from(output.data);
-
-    const { data, error } = await supabase.rpc('match_documents', {
-      query_embedding: queryEmbedding,
-      match_threshold: 0.25,
-      match_count: 2
-    });
-
-    if (error || !data || data.length === 0) {
-      return "No directly matching documentation found in database.";
-    }
-    return data.map(d => `[${d.title}]: ${d.content}`).join('\n\n');
-  },
-
-  find_next_available_slot: async ({ is_emergency }) => {
-    if (is_emergency) {
-      return "VIP Emergency Slot: Today at 4:30 PM EST (Link: https://cal.com/vip-sync)";
-    }
-    return "Standard Slot: Tomorrow at 11:00 AM EST (Link: https://cal.com/standard-sync)";
-  }
-};
-
-const tools = [
-  {
-    type: "function",
-    function: {
-      name: "search_knowledge_base",
-      description: "Search official company documentation, pricing, guarantees, and SLA terms.",
-      parameters: {
-        type: "object",
-        properties: { query: { type: "string", description: "Search query" } },
-        required: ["query"]
-      }
-    }
-  },
-  {
-    type: "function",
-    function: {
-      name: "find_next_available_slot",
-      description: "Look up scheduling availability. Set is_emergency = true for critical downtime or active loss.",
-      parameters: {
-        type: "object",
-        properties: { is_emergency: { type: "boolean", description: "True if active emergency" } },
-        required: ["is_emergency"]
-      }
-    }
-  }
-];
+// Downstream background dispatcher to Make
 async function dispatchToMake(payload) {
   const webhookUrl = process.env.MAKE_DISPATCH_WEBHOOK_URL;
   if (!webhookUrl) {
@@ -78,190 +20,197 @@ async function dispatchToMake(payload) {
     const response = await fetch(webhookUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
+      body: JSON.stringify(payload),
     });
-    console.log("[Make Dispatch] Sent successfully. Status:", response.status);
+    console.log("[Make Dispatch] Response status:", response.status);
   } catch (err) {
-    console.error("[Make Dispatch] Failed:", err.message);
+    console.error("[Make Dispatch] Transmission failed:", err.message);
   }
 }
-export default async function handler(req, res) {
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method Not Allowed' });
-  }
 
-  const { sessionId, name, email, message } = req.body || {};
-  if (!message || (!sessionId && (!name || !email))) {
-    return res.status(400).json({ error: 'Missing message or identity' });
-  }
+// Tool definitions for function calling
+const tools = [
+  {
+    type: "function",
+    function: {
+      name: "search_knowledge_base",
+      description: "Searches the vector database for internal pricing, SLA terms, architecture, and company policies.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: {
+            type: "string",
+            description: "The specific search concept or question to look up.",
+          },
+        },
+        required: ["query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "find_next_available_slot",
+      description: "Finds available calendar sync slots for consultations or urgent downtime triage.",
+      parameters: {
+        type: "object",
+        properties: {
+          is_emergency: {
+            type: "boolean",
+            description: "Set to true if user mentions downtime, crashes, financial loss, or urgent issues.",
+          },
+        },
+        required: ["is_emergency"],
+      },
+    },
+  },
+];
 
-  try {
-    let currentSessionId = sessionId;
+const availableTools = {
+  search_knowledge_base: async ({ query }) => {
+    try {
+      const extractor = await pipeline("feature-extraction", "Xenova/all-MiniLM-L6-v2");
+      const output = await extractor(query, { pooling: "mean", normalize: true });
+      const queryEmbedding = Array.from(output.data);
 
-    // 1. Initialize session if new
-    if (!currentSessionId) {
-      const { data: newSession, error: sError } = await supabase
-        .from('sessions')
-        .insert([{ prospect_name: name.trim(), prospect_email: email.toLowerCase().trim() }])
-        .select()
-        .single();
-      if (sError) throw sError;
-      currentSessionId = newSession.id;
-    }
-
-    // 2. Persist new user message
-    await supabase.from('session_messages').insert([{
-      session_id: currentSessionId,
-      role: 'user',
-      content: message
-    }]);
-
-    // 3. Hydrate session summary & message count
-    const { data: sessionData } = await supabase
-      .from('sessions')
-      .select('summary')
-      .eq('id', currentSessionId)
-      .single();
-
-    const { data: allMessages } = await supabase
-      .from('session_messages')
-      .select('role, content')
-      .eq('session_id', currentSessionId)
-      .order('created_at', { ascending: true });
-
-    let runningSummary = sessionData?.summary || '';
-
-    // Sliding Window Summarization: Trigger if conversation history exceeds 6 turns
-    if (allMessages.length > 6) {
-      const olderTurns = allMessages.slice(0, allMessages.length - 4);
-      const summaryPrompt = `Condense the following conversation into 2-3 factual bullet points. Retain client identity, budget constraints, technical needs, and booked slots:\n` +
-        olderTurns.map(m => `${m.role}: ${m.content}`).join('\n');
-
-      const sumRes = await groq.chat.completions.create({
-        model: "qwen/qwen3.8-27b",
-        messages: [{ role: 'user', content: summaryPrompt }],
-        temperature: 0.1
+      const { data, error } = await supabase.rpc("match_documents", {
+        query_embedding: queryEmbedding,
+        match_threshold: 0.25,
+        match_count: 2,
       });
 
-      runningSummary = sumRes.choices[0]?.message?.content || runningSummary;
-      await supabase.from('sessions').update({ summary: runningSummary }).eq('id', currentSessionId);
+      if (error || !data || data.length === 0) {
+        return "No directly matching documentation found in database.";
+      }
+      return data.map((d) => `[${d.title}]: ${d.content}`).join("\n\n");
+    } catch (err) {
+      return `Error querying knowledge base: ${err.message}`;
     }
+  },
+  find_next_available_slot: async ({ is_emergency }) => {
+    if (is_emergency) {
+      return JSON.stringify({
+        slot: "Today at 4:30 PM EST",
+        type: "Emergency Outage Triage (VIP)",
+        bookingUrl: "https://cal.com/vip-sync",
+      });
+    }
+    return JSON.stringify({
+      slot: "Tomorrow at 11:00 AM EST",
+      type: "Standard Technical Architecture Consultation",
+      bookingUrl: "https://cal.com/consultation",
+    });
+  },
+};
 
-    // Use summary + last 4 messages for token-efficient prompt payload
-    const recentMessages = allMessages.slice(-4);
+export default async function handler(req, res) {
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "Method not allowed" });
+  }
+
+  const { message, sessionId, name, email } = req.body || {};
+  const currentSessionId = sessionId || `session_${Date.now()}`;
+  const incomingUserPrompt = message || "Hello";
+
+  // Set SSE response headers
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+  });
+
+  try {
     const messages = [
       {
         role: "system",
-        content: `You are an autonomous technical solutions engineer. Ground every answer strictly in retrieved documentation. Use tools when needed.
-${runningSummary ? `\nRolling Conversation Context:\n${runningSummary}` : ''}`
+        content: `You are an enterprise solutions engineer. You evaluate technical inquiries, query internal vector knowledge docs for accurate pricing/guarantees, and provision calendar slots using tools. Always cite documentation directly.`,
       },
-      ...recentMessages.map(m => ({ role: m.role, content: m.content }))
+      {
+        role: "user",
+        content: incomingUserPrompt,
+      },
     ];
 
-    // 4. Resolve Tool Calls (Non-streaming evaluation pass)
-    let response = await groq.chat.completions.create({
-      model: MODEL_ID,
-      messages: messages,
-      tools: tools,
-      tool_choice: "auto"
+    // Initial tool-resolution pass
+    let initialResponse = await groq.chat.completions.create({
+      model: "llama-3.3-70b-versatile",
+      messages,
+      tools,
+      tool_choice: "auto",
+      temperature: 0.1,
     });
 
-    let responseMessage = response.choices[0].message;
+    let assistantMessage = initialResponse.choices[0]?.message;
 
-    while (responseMessage.tool_calls && responseMessage.tool_calls.length > 0) {
-      messages.push(responseMessage);
-      for (const toolCall of responseMessage.tool_calls) {
+    // Handle tool calls if triggered
+    if (assistantMessage?.tool_calls && assistantMessage.tool_calls.length > 0) {
+      messages.push(assistantMessage);
+
+      for (const toolCall of assistantMessage.tool_calls) {
         const functionName = toolCall.function.name;
-        const functionArgs = JSON.parse(toolCall.function.arguments);
-        const result = await availableTools[functionName](functionArgs);
+        const functionArgs = JSON.parse(toolCall.function.arguments || "{}");
+        const toolFunction = availableTools[functionName];
+
+        let toolOutput = "Tool not found.";
+        if (toolFunction) {
+          toolOutput = await toolFunction(functionArgs);
+        }
 
         messages.push({
-          tool_call_id: toolCall.id,
           role: "tool",
+          tool_call_id: toolCall.id,
           name: functionName,
-          content: JSON.stringify(result)
+          content: toolOutput,
         });
       }
-
-      response = await groq.chat.completions.create({
-        model: "qwen/qwen3.8-27b",
-        messages: messages
-      });
-      responseMessage = response.choices[0].message;
     }
 
-    // 5. Open Server-Sent Events (SSE) Stream for real-time delivery
-    res.writeHead(200, {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      'Connection': 'keep-alive',
-      'X-Accel-Buffering': 'no'
+    // Secondary pass with real-time SSE token streaming
+    const stream = await groq.chat.completions.create({
+      model: "llama-3.3-70b-versatile",
+      messages,
+      stream: true,
+      temperature: 0.1,
     });
 
-  // 1. Signal SSE stream completion
-    res.write(`event: done\ndata: {}\n\n`);
-
-    // 2. Compute urgency score based on resolution content
-    const isEmergency = completeAssistantReply.includes("vip-sync") || completeAssistantReply.toLowerCase().includes("emergency");
-    const triageUrgency = isEmergency ? 9 : 5;
-    // 3. Await Make webhook dispatch before closing the connection
-    await dispatchToMake({
-      sessionId: currentSessionId,
-      name: "Inbound Prospect",
-      email: "inbound@lead-engine.local",
-      userMessage: message,
-      assistantReply: completeAssistantReply,
-      urgencyScore: triageUrgency,
-      timestamp: new Date().toISOString()
-    });
-
-    // 4. Terminate response stream
-    res.end();
-    
-      
-
-    let completeAssistantReply = '';
+    let completeAssistantReply = "";
 
     for await (const chunk of stream) {
-      const delta = chunk.choices[0]?.delta?.content || '';
+      const delta = chunk.choices[0]?.delta?.content || "";
       if (delta) {
         completeAssistantReply += delta;
         res.write(`event: token\ndata: ${JSON.stringify({ token: delta })}\n\n`);
       }
     }
 
+    // Signal SSE stream completion
     res.write(`event: done\ndata: {}\n\n`);
+
+    // Urgency calculation & Make notification trigger
+    const isEmergency =
+      completeAssistantReply.includes("vip-sync") ||
+      completeAssistantReply.toLowerCase().includes("emergency");
+    const urgencyScore = isEmergency ? 9 : 5;
+
+    await dispatchToMake({
+      sessionId: currentSessionId,
+      name: name || "Inbound Prospect",
+      email: email || "inbound@lead-engine.local",
+      userMessage: incomingUserPrompt,
+      assistantReply: completeAssistantReply,
+      urgencyScore: urgencyScore,
+      timestamp: new Date().toISOString(),
+    });
+
     res.end();
-
-    // Check if lead was high urgency or scheduled an emergency
-      const isEmergencySync = fullAssistantReply.includes("vip-sync") || fullAssistantReply.toLowerCase().includes("emergency");
-      const computedUrgency = isEmergencySync ? 9 : 5;
-
-      // Fire non-blocking downstream webhook to Make
-      dispatchToMake({
-        sessionId: currentSessionId,
-        name: name || "Anonymous Lead",
-        email: email || "Not Provided",
-        userMessage: message,
-        assistantReply: fullAssistantReply,
-        urgencyScore: computedUrgency,
-        timestamp: new Date().toISOString()
-      });
-
-    // 6. Asynchronously commit the final generated response into Supabase
-    if (completeAssistantReply) {
-      await supabase.from('session_messages').insert([{
-        session_id: currentSessionId,
-        role: 'assistant',
-        content: completeAssistantReply
-      }]);
-    }
-
   } catch (err) {
-    if (!res.headersSent) {
-      return res.status(500).json({ error: err.message });
-    }
-    res.write(`event: error\ndata: ${JSON.stringify({ error: err.message })}\n\n`);
+    console.error("[Runtime Error]:", err);
+    res.write(
+      `event: token\ndata: ${JSON.stringify({
+        token: `\n\n[Pipeline Error: ${err.message}]`,
+      })}\n\n`
+    );
+    res.write(`event: done\ndata: {}\n\n`);
     res.end();
   }
 }
