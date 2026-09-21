@@ -133,7 +133,7 @@ export default async function handler(req, res) {
 
     // Initial tool-resolution pass
     let initialResponse = await groq.chat.completions.create({
-      model: "qwen/qwen3.8-27b",
+      model: "openai/gpt-oss-20b",
       messages,
       tools,
       tool_choice: "auto",
@@ -167,7 +167,7 @@ export default async function handler(req, res) {
 
     // Secondary pass with real-time SSE token streaming
     const stream = await groq.chat.completions.create({
-      model: "qwen/qwen3.8-27b",
+      model: "openai/gpt-oss-20b",
       messages,
       stream: true,
       temperature: 0.1,
