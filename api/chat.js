@@ -125,7 +125,7 @@ Be concise, technical, and refer to previous context if provided.`
 
     // 4. Initial Agent Inference
     let response = await groq.chat.completions.create({
-      model: "llama-3.1-8b-instant",
+      model: "qwen/qwen3.8-27b",
       messages: messages,
       tools: tools,
       tool_choice: "auto"
@@ -152,7 +152,7 @@ Be concise, technical, and refer to previous context if provided.`
       }
 
       response = await groq.chat.completions.create({
-        model: "llama-3.1-8b-instant",
+        model: "qwen/qwen3.8-27b",
         messages: messages
       });
 
