@@ -131,84 +131,96 @@ export default async function handler(req, res) {
       },
     ];
 
-    // Initial tool-resolution pass
-    let initialResponse = await groq.chat.completions.create({
-      model: "openai/gpt-oss-20b",
-      messages,
-      tools,
-      tool_choice: "auto",
-      temperature: 0.1,
-    });
+const messages = [
+      {
+        role: "system",
+        content: `You are an enterprise solutions engineer. You evaluate technical inquiries, query internal vector knowledge docs for accurate pricing/guarantees, and provision calendar slots using tools. Always cite documentation and provisioned URLs directly.`,
+      },
+      {
+        role: "user",
+        content: incomingUserPrompt,
+      },
+    ];
 
-    let assistantMessage = initialResponse.choices[0]?.message;
-
-    // Handle tool calls if triggered
-    if (assistantMessage?.tool_calls && assistantMessage.tool_calls.length > 0) {
-      messages.push(assistantMessage);
-
-      for (const toolCall of assistantMessage.tool_calls) {
-        const functionName = toolCall.function.name;
-        const functionArgs = JSON.parse(toolCall.function.arguments || "{}");
-        const toolFunction = availableTools[functionName];
-
-        let toolOutput = "Tool not found.";
-        if (toolFunction) {
-          toolOutput = await toolFunction(functionArgs);
-        }
-
-        messages.push({
-          role: "tool",
-          tool_call_id: toolCall.id,
-          name: functionName,
-          content: toolOutput,
-        });
-      }
-    }
-
-   // Secondary pass with real-time SSE token streaming
-    const stream = await groq.chat.completions.create({
-      model: "openai/gpt-oss-20b",
-      messages,
-      tools,              // Provide tool definitions so the engine allows the context
-      tool_choice: "none", // Explicitly instruct the model to stream prose only
-      stream: true,
-      temperature: 0.1,
-      max_tokens: 600,
-    });
-
+    // 1. Resolve all required tools iteratively (handles multi-tool queries)
     let completeAssistantReply = "";
+    let stepCount = 0;
+    const MAX_STEPS = 4;
 
-    for await (const chunk of stream) {
-      const delta = chunk.choices[0]?.delta?.content || "";
-      if (delta) {
-        completeAssistantReply += delta;
-        res.write(`event: token\ndata: ${JSON.stringify({ token: delta })}\n\n`);
+    while (stepCount < MAX_STEPS) {
+      stepCount++;
+
+      const completion = await groq.chat.completions.create({
+        model: "openai/gpt-oss-20b",
+        messages,
+        tools,
+        tool_choice: "auto",
+        temperature: 0.1,
+        max_tokens: 600,
+      });
+
+      const choice = completion.choices[0];
+      const assistantMessage = choice?.message;
+
+      // If the model invoked tools, resolve them and continue the loop
+      if (assistantMessage?.tool_calls && assistantMessage.tool_calls.length > 0) {
+        messages.push(assistantMessage);
+
+        for (const toolCall of assistantMessage.tool_calls) {
+          const functionName = toolCall.function.name;
+          const functionArgs = JSON.parse(toolCall.function.arguments || "{}");
+          const toolFunction = availableTools[functionName];
+
+          let toolOutput = "Tool not found.";
+          if (toolFunction) {
+            toolOutput = await toolFunction(functionArgs);
+          }
+
+          messages.push({
+            role: "tool",
+            tool_call_id: toolCall.id,
+            name: functionName,
+            content: toolOutput,
+          });
+        }
+      } else {
+        // All tools are resolved; capture the final generated response
+        completeAssistantReply = assistantMessage?.content || "";
+        break;
       }
     }
 
-    // Signal SSE stream completion
+    // 2. Stream the completed response smoothly over SSE to the frontend
+    const tokens = completeAssistantReply.match(/\S+\s*/g) || [completeAssistantReply];
+    for (const token of tokens) {
+      res.write(`event: token\ndata: ${JSON.stringify({ token })}\n\n`);
+      await new Promise((resolve) => setTimeout(resolve, 20)); // smooth streaming pacing
+    }
+
+    // 3. Close SSE token stream
     res.write(`event: done\ndata: {}\n\n`);
 
-    // Urgency calculation & Make notification trigger
+    // 4. Calculate urgency tier
     const isEmergency =
       completeAssistantReply.includes("vip-sync") ||
       completeAssistantReply.toLowerCase().includes("emergency");
     const urgencyScore = isEmergency ? 9 : 5;
 
-// Persist into public.leads table
+    // 5. Persist lead directly to Supabase public.leads
     try {
       await supabase.from("leads").insert({
-        prospect_name: name || "Anonymous Lead",
+        prospect_name: name || "Inbound Prospect",
         prospect_email: email || "inbound@lead-engine.local",
         category: isEmergency ? "Technical Support" : "General Inquiry",
         urgency_score: urgencyScore,
         draft_reply: completeAssistantReply,
-        processed_at: new Date().toISOString()
+        processed_at: new Date().toISOString(),
       });
     } catch (dbErr) {
       console.error("[Database Leads Insert Error]:", dbErr.message);
-    }    
+    }
 
+    // 6. Push event to Make webhook
     await dispatchToMake({
       sessionId: currentSessionId,
       name: name || "Inbound Prospect",
@@ -220,6 +232,8 @@ export default async function handler(req, res) {
     });
 
     res.end();
+
+
   } catch (err) {
     console.error("[Runtime Error]:", err);
     res.write(
