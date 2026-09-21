@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Enterprise Lead Triage Engine</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen flex items-center justify-center p-4">
+  <div class="max-w-md w-full bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-2xl">
+    <div class="mb-6">
+      <span class="text-xs font-semibold uppercase tracking-wider text-emerald-400 bg-emerald-950/60 px-2 py-1 rounded border border-emerald-800">
+        Live Edge Engine
+      </span>
+      <h1 class="text-xl font-bold mt-3 text-white">Inbound Lead Processor</h1>
+      <p class="text-xs text-slate-400 mt-1">Autonomous classification, urgency scoring, and reply generation powered by Groq & Supabase.</p>
+    </div>
+
+    <form id="leadForm" class="space-y-4">
+      <div>
+        <label class="block text-xs font-medium text-slate-300 mb-1">Full Name</label>
+        <input type="text" id="name" required placeholder="Jane Doe" 
+               class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500 transition">
+      </div>
+
+      <div>
+        <label class="block text-xs font-medium text-slate-300 mb-1">Work Email</label>
+        <input type="email" id="email" required placeholder="jane@company.com" 
+               class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500 transition">
+      </div>
+
+      <div>
+        <label class="block text-xs font-medium text-slate-300 mb-1">Inquiry / Business Need</label>
+        <textarea id="message" rows="3" required placeholder="Describe what your team needs automated..." 
+                  class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500 transition"></textarea>
+      </div>
+
+      <button type="submit" id="submitBtn" 
+              class="w-full bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-semibold py-2 rounded-lg text-sm transition duration-150 flex items-center justify-center">
+        <span>Process Inbound Lead</span>
+      </button>
+    </form>
+
+    <!-- Real-Time Output Container -->
+    <div id="output" class="hidden mt-6 p-4 rounded-lg bg-slate-950 border border-slate-800 text-xs space-y-2">
+      <div class="flex justify-between items-center pb-2 border-b border-slate-800">
+        <span class="text-slate-400">Status</span>
+        <span id="outStatus" class="font-mono text-emerald-400 font-bold">Processed 200 OK</span>
+      </div>
+      <div class="flex justify-between">
+        <span class="text-slate-400">Classified Category:</span>
+        <span id="outCategory" class="font-semibold text-white"></span>
+      </div>
+      <div class="flex justify-between">
+        <span class="text-slate-400">Normalized Urgency:</span>
+        <span id="outUrgency" class="font-bold"></span>
+      </div>
+      <div class="pt-2">
+        <span class="text-slate-400 block mb-1">Generated Draft Response:</span>
+        <p id="outReply" class="text-slate-200 italic bg-slate-900 p-2.5 rounded border border-slate-800/80 leading-relaxed"></p>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const form = document.getElementById('leadForm');
+    const submitBtn = document.getElementById('submitBtn');
+    const output = document.getElementById('output');
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      submitBtn.disabled = true;
+      submitBtn.innerHTML = '<span class="animate-pulse">Processing Payload...</span>';
+      output.classList.add('hidden');
+
+      const payload = {
+        name: document.getElementById('name').value,
+        email: document.getElementById('email').value,
+        message: document.getElementById('message').value
+      };
+
+      try {
+        const res = await fetch('/api/webhook', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+
+        const json = await res.json();
+        if (!json.success) throw new Error(json.error || 'Server error');
+
+        const lead = json.data;
+        document.getElementById('outCategory').innerText = lead.category;
+        
+        const urgencyEl = document.getElementById('outUrgency');
+        urgencyEl.innerText = `${lead.urgency_score} / 10`;
+        urgencyEl.className = lead.urgency_score >= 8 
+          ? 'font-bold text-rose-400' 
+          : 'font-bold text-amber-400';
+
+        document.getElementById('outReply').innerText = lead.draft_reply;
+        output.classList.remove('hidden');
+        form.reset();
+      } catch (err) {
+        alert('Pipeline Error: ' + err.message);
+      } finally {
+        submitBtn.disabled = false;
+        submitBtn.innerHTML = '<span>Process Inbound Lead</span>';
+      }
+    });
+  </script>
+</body>
+</html>
