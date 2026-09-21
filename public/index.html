@@ -7,17 +7,20 @@
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
     body { background: #090d16; color: #f1f5f9; height: 100vh; display: flex; align-items: center; justify-content: center; padding: 16px; }
-    .console-card { background: #0f172a; border: 1px solid #1e293b; border-radius: 12px; width: 100%; max-width: 600px; height: 90vh; display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.6); }
+    .console-card { background: #0f172a; border: 1px solid #1e293b; border-radius: 12px; width: 100%; max-width: 650px; height: 90vh; display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.6); }
     .header { padding: 16px 20px; border-bottom: 1px solid #1e293b; background: #090d16; display: flex; justify-content: space-between; align-items: center; }
+    .nav-links { display: flex; align-items: center; gap: 12px; }
     .badge { font-size: 10px; font-weight: 700; text-transform: uppercase; color: #34d399; background: rgba(6,78,59,0.4); border: 1px solid #065f46; padding: 3px 8px; border-radius: 4px; }
+    .admin-link { color: #94a3b8; font-size: 12px; text-decoration: none; border-bottom: 1px dashed #475569; }
+    .admin-link:hover { color: #34d399; }
     .chat-box { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 14px; }
-    .msg { max-width: 82%; padding: 12px 16px; border-radius: 8px; font-size: 13px; line-height: 1.5; }
+    .msg { max-width: 85%; padding: 12px 16px; border-radius: 8px; font-size: 13px; line-height: 1.5; white-space: pre-wrap; }
     .msg.user { background: #1e293b; color: #f8fafc; align-self: flex-end; border-bottom-right-radius: 2px; }
     .msg.assistant { background: #020617; border: 1px solid #1e293b; color: #e2e8f0; align-self: flex-start; border-bottom-left-radius: 2px; }
     .input-area { padding: 16px; border-top: 1px solid #1e293b; background: #090d16; }
     .init-inputs { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px; }
-    input, textarea { width: 100%; background: #020617; border: 1px solid #1e293b; border-radius: 6px; padding: 10px 12px; color: #fff; font-size: 13px; outline: none; }
-    input:focus, textarea:focus { border-color: #10b981; }
+    input { width: 100%; background: #020617; border: 1px solid #1e293b; border-radius: 6px; padding: 10px 12px; color: #fff; font-size: 13px; outline: none; }
+    input:focus { border-color: #10b981; }
     .send-row { display: flex; gap: 8px; }
     button { background: #10b981; color: #020617; font-weight: 700; padding: 10px 18px; border: none; border-radius: 6px; cursor: pointer; }
     button:disabled { background: #334155; color: #94a3b8; cursor: not-allowed; }
@@ -29,20 +32,21 @@
     <div class="header">
       <div>
         <h2 style="font-size: 15px; font-weight: 700;">Enterprise Solutions Console</h2>
-        <p style="font-size: 11px; color: #94a3b8;">Multi-Turn Memory • pgvector RAG • Tool Calling</p>
+        <p style="font-size: 11px; color: #94a3b8;">Real-Time SSE • Sliding Summary • pgvector RAG</p>
       </div>
-      <span class="badge">Session Active</span>
+      <div class="nav-links">
+        <a href="/admin.html" class="admin-link">View Admin Metrics &rarr;</a>
+        <span class="badge">SSE Live</span>
+      </div>
     </div>
 
     <div class="chat-box" id="chatBox">
-      <div class="msg assistant">
-        Hello! I'm your enterprise solutions engineer. Ask any question regarding our infrastructure, pricing, SLA terms, or schedule an immediate consultation.
-      </div>
+      <div class="msg assistant">Hello! I'm your enterprise solutions engineer. Ask any question regarding our infrastructure, pricing, SLA terms, or schedule an immediate consultation.</div>
     </div>
 
     <div class="input-area">
       <div class="init-inputs" id="initInputs">
-        <input type="text" id="name" placeholder="Your Name (e.g. David Kim)" required>
+        <input type="text" id="name" placeholder="Your Name" required>
         <input type="email" id="email" placeholder="Work Email" required>
       </div>
       <div class="send-row">
@@ -59,12 +63,13 @@
     const msgInput = document.getElementById('message');
     const initInputs = document.getElementById('initInputs');
 
-    function appendMessage(role, text) {
+    function appendMessage(role, text = '') {
       const el = document.createElement('div');
       el.className = `msg ${role}`;
       el.innerText = text;
       chatBox.appendChild(el);
       chatBox.scrollTop = chatBox.scrollHeight;
+      return el;
     }
 
     async function handleSend() {
@@ -75,7 +80,7 @@
       const email = document.getElementById('email')?.value || '';
 
       if (!currentSessionId && (!name || !email)) {
-        alert("Please enter your name and email to initialize the session.");
+        alert("Please provide name and email to initialize the session.");
         return;
       }
 
@@ -84,29 +89,53 @@
       sendBtn.disabled = true;
       sendBtn.innerText = '...';
 
+      const assistantMsgEl = appendMessage('assistant', '');
+
       try {
-        const res = await fetch('/api/chat', {
+        const response = await fetch('/api/chat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            sessionId: currentSessionId,
-            name,
-            email,
-            message
-          })
+          body: JSON.stringify({ sessionId: currentSessionId, name, email, message })
         });
 
-        const data = await res.json();
-        if (!data.success) throw new Error(data.error);
-
-        if (!currentSessionId && data.sessionId) {
-          currentSessionId = data.sessionId;
-          initInputs.style.display = 'none'; // Lock identity for subsequent turns
+        if (!response.ok) {
+          const errData = await response.json();
+          throw new Error(errData.error || 'Server error');
         }
 
-        appendMessage('assistant', data.reply);
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n\n');
+          buffer = lines.pop(); // Retain incomplete chunk
+
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            const matchEvent = line.match(/^event: (.*)$/m);
+            const matchData = line.match(/^data: (.*)$/m);
+
+            const eventType = matchEvent ? matchEvent[1] : null;
+            const data = matchData ? JSON.parse(matchData[1]) : {};
+
+            if (eventType === 'session' && data.sessionId) {
+              currentSessionId = data.sessionId;
+              initInputs.style.display = 'none';
+            } else if (eventType === 'token' && data.token) {
+              assistantMsgEl.innerText += data.token;
+              chatBox.scrollTop = chatBox.scrollHeight;
+            } else if (eventType === 'error') {
+              assistantMsgEl.innerText += `\n[Stream Error: ${data.error}]`;
+            }
+          }
+        }
       } catch (err) {
-        appendMessage('assistant', 'Error: ' + err.message);
+        assistantMsgEl.innerText = 'Error: ' + err.message;
       } finally {
         sendBtn.disabled = false;
         sendBtn.innerText = 'Send';
@@ -118,3 +147,4 @@
   </script>
 </body>
 </html>
+touch public/admin.html

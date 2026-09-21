@@ -5,6 +5,8 @@ import { createClient } from '@supabase/supabase-js';
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
 
+const MODEL_ID = "qwen/qwen3.8-27b"; // Ensure this matches your active Groq model
+
 let embedderInstance = null;
 async function getEmbedder() {
   if (!embedderInstance) {
@@ -28,7 +30,6 @@ const availableTools = {
     if (error || !data || data.length === 0) {
       return "No directly matching documentation found in database.";
     }
-
     return data.map(d => `[${d.title}]: ${d.content}`).join('\n\n');
   },
 
@@ -45,12 +46,10 @@ const tools = [
     type: "function",
     function: {
       name: "search_knowledge_base",
-      description: "Search official company documentation, policies, pricing, architecture, and warranties using semantic search.",
+      description: "Search official company documentation, pricing, guarantees, and SLA terms.",
       parameters: {
         type: "object",
-        properties: {
-          query: { type: "string", description: "The search query to match against documentation vectors" }
-        },
+        properties: { query: { type: "string", description: "Search query" } },
         required: ["query"]
       }
     }
@@ -59,12 +58,10 @@ const tools = [
     type: "function",
     function: {
       name: "find_next_available_slot",
-      description: "Look up scheduling availability. Set is_emergency = true if the client reports active outages or severe business loss.",
+      description: "Look up scheduling availability. Set is_emergency = true for critical downtime or active loss.",
       parameters: {
         type: "object",
-        properties: {
-          is_emergency: { type: "boolean", description: "True if lead is experiencing urgent downtime or high loss" }
-        },
+        properties: { is_emergency: { type: "boolean", description: "True if active emergency" } },
         required: ["is_emergency"]
       }
     }
@@ -77,55 +74,76 @@ export default async function handler(req, res) {
   }
 
   const { sessionId, name, email, message } = req.body || {};
-
   if (!message || (!sessionId && (!name || !email))) {
-    return res.status(400).json({ error: 'Invalid payload: missing message or session identity.' });
+    return res.status(400).json({ error: 'Missing message or identity' });
   }
 
   try {
     let currentSessionId = sessionId;
 
-    // 1. Create session if new
+    // 1. Initialize session if new
     if (!currentSessionId) {
       const { data: newSession, error: sError } = await supabase
         .from('sessions')
         .insert([{ prospect_name: name.trim(), prospect_email: email.toLowerCase().trim() }])
         .select()
         .single();
-
       if (sError) throw sError;
       currentSessionId = newSession.id;
     }
 
-    // 2. Persist the inbound user message
+    // 2. Persist new user message
     await supabase.from('session_messages').insert([{
       session_id: currentSessionId,
       role: 'user',
       content: message
     }]);
 
-    // 3. Hydrate previous conversation turns from Supabase (last 8 messages)
-    const { data: history } = await supabase
+    // 3. Hydrate session summary & message count
+    const { data: sessionData } = await supabase
+      .from('sessions')
+      .select('summary')
+      .eq('id', currentSessionId)
+      .single();
+
+    const { data: allMessages } = await supabase
       .from('session_messages')
       .select('role, content')
       .eq('session_id', currentSessionId)
-      .order('created_at', { ascending: true })
-      .limit(8);
+      .order('created_at', { ascending: true });
 
+    let runningSummary = sessionData?.summary || '';
+
+    // Sliding Window Summarization: Trigger if conversation history exceeds 6 turns
+    if (allMessages.length > 6) {
+      const olderTurns = allMessages.slice(0, allMessages.length - 4);
+      const summaryPrompt = `Condense the following conversation into 2-3 factual bullet points. Retain client identity, budget constraints, technical needs, and booked slots:\n` +
+        olderTurns.map(m => `${m.role}: ${m.content}`).join('\n');
+
+      const sumRes = await groq.chat.completions.create({
+        model: MODEL_ID,
+        messages: [{ role: 'user', content: summaryPrompt }],
+        temperature: 0.1
+      });
+
+      runningSummary = sumRes.choices[0]?.message?.content || runningSummary;
+      await supabase.from('sessions').update({ summary: runningSummary }).eq('id', currentSessionId);
+    }
+
+    // Use summary + last 4 messages for token-efficient prompt payload
+    const recentMessages = allMessages.slice(-4);
     const messages = [
       {
         role: "system",
-        content: `You are an autonomous technical solutions engineer.
-Ground every answer strictly in retrieved documentation.
-Use tools whenever company policies, pricing, or calendar slots are needed.
-Be concise, technical, and refer to previous context if provided.`
+        content: `You are an autonomous technical solutions engineer. Ground every answer strictly in retrieved documentation. Use tools when needed.
+${runningSummary ? `\nRolling Conversation Context:\n${runningSummary}` : ''}`
       },
-      ...history.map(m => ({ role: m.role, content: m.content }))
+      ...recentMessages.map(m => ({ role: m.role, content: m.content }))
     ];
 
-    // 4. Initial Agent Inference
+    // 4. Resolve Tool Calls (Non-streaming evaluation pass)
     let response = await groq.chat.completions.create({
-      model: "qwen/qwen3.8-27b",
+      model: MODEL_ID,
       messages: messages,
       tools: tools,
       tool_choice: "auto"
@@ -133,15 +151,12 @@ Be concise, technical, and refer to previous context if provided.`
 
     let responseMessage = response.choices[0].message;
 
-    // 5. Tool Resolution Loop
     while (responseMessage.tool_calls && responseMessage.tool_calls.length > 0) {
       messages.push(responseMessage);
-
       for (const toolCall of responseMessage.tool_calls) {
         const functionName = toolCall.function.name;
         const functionArgs = JSON.parse(toolCall.function.arguments);
-        const toolFn = availableTools[functionName];
-        const result = await toolFn(functionArgs);
+        const result = await availableTools[functionName](functionArgs);
 
         messages.push({
           tool_call_id: toolCall.id,
@@ -152,29 +167,56 @@ Be concise, technical, and refer to previous context if provided.`
       }
 
       response = await groq.chat.completions.create({
-        model: "qwen/qwen3.8-27b",
+        model: MODEL_ID,
         messages: messages
       });
-
       responseMessage = response.choices[0].message;
     }
 
-    const assistantReply = responseMessage.content;
-
-    // 6. Persist assistant reply in session memory
-    await supabase.from('session_messages').insert([{
-      session_id: currentSessionId,
-      role: 'assistant',
-      content: assistantReply
-    }]);
-
-    return res.status(200).json({
-      success: true,
-      sessionId: currentSessionId,
-      reply: assistantReply
+    // 5. Open Server-Sent Events (SSE) Stream for real-time delivery
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no'
     });
 
+    // Send metadata header event with session ID
+    res.write(`event: session\ndata: ${JSON.stringify({ sessionId: currentSessionId })}\n\n`);
+
+    const stream = await groq.chat.completions.create({
+      model: MODEL_ID,
+      messages: messages,
+      stream: true
+    });
+
+    let completeAssistantReply = '';
+
+    for await (const chunk of stream) {
+      const delta = chunk.choices[0]?.delta?.content || '';
+      if (delta) {
+        completeAssistantReply += delta;
+        res.write(`event: token\ndata: ${JSON.stringify({ token: delta })}\n\n`);
+      }
+    }
+
+    res.write(`event: done\ndata: {}\n\n`);
+    res.end();
+
+    // 6. Asynchronously commit the final generated response into Supabase
+    if (completeAssistantReply) {
+      await supabase.from('session_messages').insert([{
+        session_id: currentSessionId,
+        role: 'assistant',
+        content: completeAssistantReply
+      }]);
+    }
+
   } catch (err) {
-    return res.status(500).json({ success: false, error: err.message });
+    if (!res.headersSent) {
+      return res.status(500).json({ error: err.message });
+    }
+    res.write(`event: error\ndata: ${JSON.stringify({ error: err.message })}\n\n`);
+    res.end();
   }
 }

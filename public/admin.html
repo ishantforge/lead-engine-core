@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Engine Admin & Metrics</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    body { background: #090d16; color: #f1f5f9; padding: 32px 20px; }
+    .container { max-width: 960px; margin: 0 auto; }
+    .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 28px; }
+    .back-btn { color: #10b981; text-decoration: none; font-size: 13px; font-weight: 600; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 32px; }
+    .metric-card { background: #0f172a; border: 1px solid #1e293b; border-radius: 8px; padding: 20px; }
+    .metric-val { font-size: 28px; font-weight: 700; color: #fff; margin-top: 6px; }
+    .metric-label { font-size: 11px; text-transform: uppercase; color: #94a3b8; letter-spacing: 0.05em; font-weight: 600; }
+    .table-box { background: #0f172a; border: 1px solid #1e293b; border-radius: 8px; padding: 20px; }
+    h2 { font-size: 16px; margin-bottom: 16px; color: #fff; }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    th { text-align: left; padding: 10px 12px; color: #94a3b8; border-bottom: 1px solid #1e293b; font-weight: 600; }
+    td { padding: 12px; border-bottom: 1px solid #1e293b; color: #cbd5e1; }
+    .badge-critical { color: #f43f5e; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <div>
+        <h1 style="font-size: 22px;">Operational Telemetry</h1>
+        <p style="font-size: 12px; color: #94a3b8; margin-top: 4px;">Live PostgreSQL session state & lead urgency analytics</p>
+      </div>
+      <a href="/" class="back-btn">&larr; Back to Live Console</a>
+    </div>
+
+    <div class="grid">
+      <div class="metric-card">
+        <div class="metric-label">Ingested Leads</div>
+        <div class="metric-val" id="mTotalLeads">-</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Critical Tier (Score &ge; 8)</div>
+        <div class="metric-val badge-critical" id="mCritical">-</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Average Urgency</div>
+        <div class="metric-val" id="mAvgUrgency">-</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Total Messages Logged</div>
+        <div class="metric-val" id="mTotalMsg">-</div>
+      </div>
+    </div>
+
+    <div class="table-box">
+      <h2>Recent Inbound Sessions</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Email</th>
+            <th>Rolling Memory Summary</th>
+            <th>Created</th>
+          </tr>
+        </thead>
+        <tbody id="sessionRows">
+          <tr><td colspan="4">Loading telemetry from Supabase...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <script>
+    async function loadStats() {
+      try {
+        const res = await fetch('/api/admin-stats');
+        const { stats } = await res.json();
+
+        document.getElementById('mTotalLeads').innerText = stats.totalLeads;
+        document.getElementById('mCritical').innerText = stats.criticalLeads;
+        document.getElementById('mAvgUrgency').innerText = `${stats.avgUrgency} / 10`;
+        document.getElementById('mTotalMsg').innerText = stats.totalMessages;
+
+        const tbody = document.getElementById('sessionRows');
+        tbody.innerHTML = '';
+
+        if (stats.recentSessions.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="4">No sessions found.</td></tr>';
+          return;
+        }
+
+        stats.recentSessions.forEach(s => {
+          const row = document.createElement('tr');
+          row.innerHTML = `
+            <td style="font-weight: 600; color: #fff;">${s.prospect_name}</td>
+            <td>${s.prospect_email}</td>
+            <td style="color: #94a3b8; font-style: italic;">${s.summary || 'Awaiting turn compression (>6 turns)'}</td>
+            <td>${new Date(s.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</td>
+          `;
+          tbody.appendChild(row);
+        });
+      } catch (e) {
+        console.error(e);
+      }
+    }
+    loadStats();
+  </script>
+</body>
+</html>
