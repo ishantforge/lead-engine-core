@@ -171,6 +171,8 @@ export default async function handler(req, res) {
       messages,
       stream: true,
       temperature: 0.1,
+      max_tokens: 600,
+      tool_choice: "none", // <--- Add this line to prevent tool calling during text generation
     });
 
     let completeAssistantReply = "";
