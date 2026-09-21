@@ -27,21 +27,6 @@ const availableTools = {
       match_count: 2
     });
 
-    async function dispatchToMake(payload) {
-  const webhookUrl = process.env.MAKE_DISPATCH_WEBHOOK_URL;
-  if (!webhookUrl) return;
-
-  try {
-    fetch(webhookUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    }).catch(err => console.error("Make dispatch async error:", err.message));
-  } catch (e) {
-    console.error("Failed to trigger Make dispatch:", e.message);
-  }
-}
-
     if (error || !data || data.length === 0) {
       return "No directly matching documentation found in database.";
     }
@@ -82,7 +67,24 @@ const tools = [
     }
   }
 ];
+async function dispatchToMake(payload) {
+  const webhookUrl = process.env.MAKE_DISPATCH_WEBHOOK_URL;
+  if (!webhookUrl) {
+    console.log("[Make Dispatch] No webhook URL configured.");
+    return;
+  }
 
+  try {
+    const response = await fetch(webhookUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    console.log("[Make Dispatch] Sent successfully. Status:", response.status);
+  } catch (err) {
+    console.error("[Make Dispatch] Failed:", err.message);
+  }
+}
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method Not Allowed' });
@@ -196,14 +198,28 @@ ${runningSummary ? `\nRolling Conversation Context:\n${runningSummary}` : ''}`
       'X-Accel-Buffering': 'no'
     });
 
-    // Send metadata header event with session ID
-    res.write(`event: session\ndata: ${JSON.stringify({ sessionId: currentSessionId })}\n\n`);
+  // 1. Signal SSE stream completion
+    res.write(`event: done\ndata: {}\n\n`);
 
-    const stream = await groq.chat.completions.create({
-      model: "qwen/qwen3.8-27b",
-      messages: messages,
-      stream: true
+    // 2. Compute urgency score based on resolution content
+    const isEmergency = completeAssistantReply.includes("vip-sync") || completeAssistantReply.toLowerCase().includes("emergency");
+    const computedUrgency = isEmergency ? 9 : 5;
+
+    // 3. Await Make webhook dispatch before closing the connection
+    await dispatchToMake({
+      sessionId: currentSessionId,
+      name: "Inbound Prospect",
+      email: "inbound@lead-engine.local",
+      userMessage: message,
+      assistantReply: completeAssistantReply,
+      urgencyScore: computedUrgency,
+      timestamp: new Date().toISOString()
     });
+
+    // 4. Terminate response stream
+    res.end();
+    
+      
 
     let completeAssistantReply = '';
 
