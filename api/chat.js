@@ -129,9 +129,9 @@ export default async function handler(req, res) {
         role: "user",
         content: incomingUserPrompt,
       },
-    ];
+    
 
-const messages = [
+    
       {
         role: "system",
         content: `You are an enterprise solutions engineer. You evaluate technical inquiries, query internal vector knowledge docs for accurate pricing/guarantees, and provision calendar slots using tools. Always cite documentation and provisioned URLs directly.`,
