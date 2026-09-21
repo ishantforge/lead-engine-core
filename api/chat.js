@@ -192,6 +192,20 @@ export default async function handler(req, res) {
       completeAssistantReply.toLowerCase().includes("emergency");
     const urgencyScore = isEmergency ? 9 : 5;
 
+// Persist into public.leads table
+    try {
+      await supabase.from("leads").insert({
+        prospect_name: name || "Anonymous Lead",
+        prospect_email: email || "inbound@lead-engine.local",
+        category: isEmergency ? "Technical Support" : "General Inquiry",
+        urgency_score: urgencyScore,
+        draft_reply: completeAssistantReply,
+        processed_at: new Date().toISOString()
+      });
+    } catch (dbErr) {
+      console.error("[Database Leads Insert Error]:", dbErr.message);
+    }    
+
     await dispatchToMake({
       sessionId: currentSessionId,
       name: name || "Inbound Prospect",
