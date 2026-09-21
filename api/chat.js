@@ -203,8 +203,7 @@ ${runningSummary ? `\nRolling Conversation Context:\n${runningSummary}` : ''}`
 
     // 2. Compute urgency score based on resolution content
     const isEmergency = completeAssistantReply.includes("vip-sync") || completeAssistantReply.toLowerCase().includes("emergency");
-    const computedUrgency = isEmergency ? 9 : 5;
-
+    const triageUrgency = isEmergency ? 9 : 5;
     // 3. Await Make webhook dispatch before closing the connection
     await dispatchToMake({
       sessionId: currentSessionId,
@@ -212,7 +211,7 @@ ${runningSummary ? `\nRolling Conversation Context:\n${runningSummary}` : ''}`
       email: "inbound@lead-engine.local",
       userMessage: message,
       assistantReply: completeAssistantReply,
-      urgencyScore: computedUrgency,
+      urgencyScore: triageUrgency,
       timestamp: new Date().toISOString()
     });
 
